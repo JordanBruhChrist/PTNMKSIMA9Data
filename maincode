@@ -1,0 +1,308 @@
+---
+title: "Exploring the Differential Nature of Pleiotrophin and Midkine’s relationship with Microglial Activation: The Role of the PI3K pathway"
+author: "Jordan Gilchrist"
+date: "2024-05-30"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  word_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    theme: cerulean
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# Set a global theme for all ggplots in the document
+theme_set(theme_tufte())
+```
+
+```{r}
+library(ggplot2)
+library(ggthemes)
+library(kableExtra)
+library(knitr)
+library(readxl)
+library(tidyverse)
+library(car)
+library(emmeans)
+library(lmtest)
+library(lattice)
+library(sandwich)
+library(gridExtra)
+library(patchwork)
+library(multcomp) 
+library(lsr)      
+library(car)
+library(emmeans)
+library(lmtest)
+library(sandwich)
+```
+
+```{r}
+
+file_path <- "~/RPAssays/SIMA9GriessXTT.xlsx"  # Ensure this is the correct path to your Excel file
+
+# Read the datasets from Excel
+datasets <- list(
+  lps_mk_griess = read_excel(file_path, sheet = "LPSMKGriess"),
+  lps_mk_xtt = read_excel(file_path, sheet = "LPSMKXTT"),
+  res_mk_griess = read_excel(file_path, sheet = "ResMKGriess"),
+  res_mk_xtt = read_excel(file_path, sheet = "ResMKXTT"),
+  lps_ptn_griess = read_excel(file_path, sheet = "LPSPTNGriess"),
+  lps_ptn_xtt = read_excel(file_path, sheet = "LPSPTNXTT"),
+  res_ptn_griess = read_excel(file_path, sheet = "ResPTNGriess"),
+  res_ptn_xtt = read_excel(file_path, sheet = "ResPTNXTT"),
+  lps_ptnw_griess = read_excel(file_path, sheet = "LPSPTNWGriess"),
+  lps_ptnw_xtt = read_excel(file_path, sheet = "LPSPTNWXTT"),
+  res_ptnw_griess = read_excel(file_path, sheet = "ResPTNWGriess"),
+  res_ptnw_xtt = read_excel(file_path, sheet = "ResPTNWXTT")
+)
+
+# Normalize data function
+normalize_data <- function(data, control_group) {
+  data <- data %>%
+    group_by(Plate) %>%
+    mutate(ControlMean = mean(Assay[Group == control_group], na.rm = TRUE),
+           NormalizedAssay = (Assay / ControlMean) * 100) %>%
+    ungroup()
+  
+  # Remove rows with NaN or NA values
+  data <- data %>%
+    filter(!is.na(NormalizedAssay) & !is.nan(NormalizedAssay))
+  
+  return(data)
+}
+
+# Control groups for each dataset
+control_groups <- list(
+  lps_mk_griess = "Veh-Veh",
+  lps_mk_xtt = "Veh-Veh",
+  res_mk_griess = "Veh-Veh",
+  res_mk_xtt = "Veh-Veh",
+  lps_ptn_griess = "Veh-Veh",
+  lps_ptn_xtt = "Veh-Veh",
+  res_ptn_griess = "Veh-Veh",
+  res_ptn_xtt = "Veh-Veh",
+  lps_ptnw_griess = "Veh-Veh-Veh",
+  lps_ptnw_xtt = "Veh-Veh-Veh",
+  res_ptnw_griess = "Veh-Veh-Veh",
+  res_ptnw_xtt = "Veh-Veh-Veh"
+)
+```
+
+```{r}
+# Apply normalization to each dataset using the specified control group
+normalized_datasets <- mapply(normalize_data, datasets, control_groups, SIMPLIFY = FALSE)
+
+# Set factor levels function
+set_factor_levels <- function(data) {
+  data$Treatment1 <- factor(data$Treatment1)
+  data$Treatment2 <- factor(data$Treatment2)
+  if ("Wortmannin" %in% colnames(data)) {
+    data$Wortmannin <- factor(data$Wortmannin)
+  }
+  return(data)
+}
+
+# Apply factor level setting to all datasets
+normalized_datasets <- lapply(normalized_datasets, set_factor_levels)
+```
+
+```{r}
+# Perform standard linear ANOVA with robust standard errors
+perform_linear_anova <- function(data) {
+  tryCatch({
+    # Fit the model
+    if ("Wortmannin" %in% colnames(data)) {
+      lm_model <- lm(NormalizedAssay ~ Treatment1 * Treatment2 * Wortmannin, data = data)
+    } else {
+      lm_model <- lm(NormalizedAssay ~ Treatment1 * Treatment2, data = data)
+    }
+    
+    # Summary of the model
+    anova_summary <- summary(aov(lm_model))
+    print(anova_summary)
+
+    # Calculate partial eta squared
+    anova_results <- anova(lm_model)
+    eta_sq_results <- etaSquared(lm_model, type = 2)
+    print(eta_sq_results)
+    
+    # Post-hoc tests using emmeans
+    emmeans_result <- if ("Wortmannin" %in% colnames(data)) {
+      emmeans(lm_model, pairwise ~ Treatment1 * Treatment2 * Wortmannin)
+    } else {
+      emmeans(lm_model, pairwise ~ Treatment1 * Treatment2)
+    }
+    print(emmeans_result)
+    
+    # Assumption checks
+    # Levene's test for homogeneity of variances
+    levene_test <- if ("Wortmannin" %in% colnames(data)) {
+      leveneTest(NormalizedAssay ~ Treatment1 * Treatment2 * Wortmannin, data = data)
+    } else {
+      leveneTest(NormalizedAssay ~ Treatment1 * Treatment2, data = data)
+    }
+    print(levene_test)
+    
+    # Calculate robust standard errors
+    robust_se <- coeftest(lm_model, vcov = vcovHC(lm_model, type = "HC1"))
+    print("Robust Standard Errors:")
+    print(robust_se)
+    
+    # Assumption check plots
+    par(mfrow = c(2, 2))  # Set up a 2x2 plotting area
+    
+    # Residuals vs Fitted
+    plot(lm_model, which = 1)
+    title("Residuals vs Fitted", outer = TRUE)
+    
+    # Normal Q-Q
+    plot(lm_model, which = 2)
+    title("Normal Q-Q", outer = TRUE)
+    
+    # Scale-Location
+    plot(lm_model, which = 3)
+    title("Scale-Location", outer = TRUE)
+    
+    # Residuals vs Leverage
+    plot(lm_model, which = 5)
+    title("Residuals vs Leverage", outer = TRUE)
+    
+    # Reset par
+    par(mfrow = c(1, 1))
+    
+    
+    return(list(
+      anova_summary = anova_summary,
+      eta_sq_results = eta_sq_results,
+      emmeans_result = emmeans_result,
+      levene_test = levene_test,
+      robust_se = robust_se
+    ))
+  }, error = function(e) {
+    message("Error in dataset: ", conditionMessage(e))
+    return(NULL)
+  })
+}
+
+# Perform linear ANOVA on each dataset
+anova_results <- lapply(normalized_datasets, perform_linear_anova)
+```
+
+```{r}
+# Simplified function to read sheets
+read_sheets_if_exist <- function(file_path, sheets) {
+  data_list <- lapply(sheets, function(sheet) {
+    read_excel(file_path, sheet = sheet)
+  })
+  names(data_list) <- sheets
+  return(data_list)
+}
+
+# Define the visualize_data function with combined boxplot and colored points
+visualize_data <- function(data, sheet_name) {
+  # Ensure Assay column is numeric
+  if ("Assay" %in% colnames(data)) {
+    data$Assay <- as.numeric(as.character(data$Assay))
+  } else {
+    stop("Assay column not found in the dataset.")
+  }
+  
+  # Ensure Group column exists
+  if (!"Group" %in% colnames(data)) {
+    stop("Group column not found in the dataset.")
+  }
+
+  # Ensure Plate column exists
+  if (!"Plate" %in% colnames(data)) {
+    stop("Plate column not found in the dataset.")
+  }
+
+  # Set the order of groups based on the sheet name
+  custom_order <- switch(sheet_name,
+    "LPSMKG" = c("Veh+Veh", "Veh+MK", "Veh+LPS", "LPS+MK"),
+    "LPSMKX" = c("Veh+Veh", "Veh+MK", "Veh+LPS", "LPS+MK"),
+    "ResMKG" = c("Veh+Veh", "Veh+Res", "Res+MK"),
+    "ResMKX" = c("Veh+Veh", "Veh+Res", "Res+MK"),
+    "LPSPTNG" = c("Veh+Veh", "Veh+PTN", "Veh+LPS", "LPS+PTN"),
+    "LPSPTNX" = c("Veh+Veh", "Veh+PTN", "Veh+LPS", "LPS+PTN"),
+    "ResPTNG" = c("Veh+Veh", "Veh+Res", "Res+PTN"),
+    "ResPTNX" = c("Veh+Veh", "Veh+Res", "Res+PTN"),
+    "LPSPTNWG" = c("Veh+Veh+Veh", "Veh+Veh+W", "Veh+LPS+W", "LPS+PTN+W"),
+    "LPSPTNWX" = c("Veh+Veh+Veh", "Veh+Veh+W", "Veh+LPS+W", "LPS+PTN+W"),
+    "ResPTNWG" = c("Veh+Veh+Veh", "Veh+PTN+W", "Veh+Res+W", "Res+PTN+W"),
+    "ResPTNWX" = c("Veh+Veh+Veh", "Veh+PTN+W", "Veh+Res+W", "Res+PTN+W"),
+    stop("Sheet name not recognized for custom order")
+  )
+  data$Group <- factor(data$Group, levels = custom_order)
+
+  # Plotting the data
+  p <- ggplot(data, aes(x = Group, y = Assay)) +
+    geom_boxplot(outlier.shape = NA, fill = "white", color = "black") +  # Boxplot for entire group
+    geom_jitter(aes(color = Plate), position = position_jitter(width = 0.15), size = 2) +  # Add jittered points for plates
+    theme_tufte(base_family = "sans") +
+    theme(
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.background = element_rect(fill = "white", color = NA),
+      legend.background = element_rect(fill = "white", color = NA)
+    ) +
+    labs(title = paste("Assay Data for", sheet_name), x = "Group", y = "Assay as % of Control Mean") +
+    scale_color_brewer(palette = "Set1")
+
+  return(p)
+}
+```
+
+```{r}
+# Load the dataset paths
+file_path_CM <- "~/RPAssays/DataGraphs.xlsx"
+
+# Read sheets from the file
+sheets_CM <- excel_sheets(file_path_CM)
+data_list_CM <- read_sheets_if_exist(file_path_CM, sheets_CM)
+
+# Generate individual plots
+plot_list <- list(
+  "LPS and MK (Griess)" = visualize_data(data_list_CM$`LPSMKG`, "LPSMKG"),
+  "LPS and MK (XTT)" = visualize_data(data_list_CM$`LPSMKX`, "LPSMKX"),
+  "Res and MK (Griess)" = visualize_data(data_list_CM$`ResMKG`, "ResMKG"),
+  "Res and MK (XTT)" = visualize_data(data_list_CM$`ResMKX`, "ResMKX"),
+  "LPS and PTN (Griess)" = visualize_data(data_list_CM$`LPSPTNG`, "LPSPTNG"),
+  "LPS and PTN (XTT)" = visualize_data(data_list_CM$`LPSPTNX`, "LPSPTNX"),
+  "Res and PTN (Griess)" = visualize_data(data_list_CM$`ResPTNG`, "ResPTNG"),
+  "Res and PTN (XTT)" = visualize_data(data_list_CM$`ResPTNX`, "ResPTNX"),
+  "LPS, PTN and W (Griess)" = visualize_data(data_list_CM$`LPSPTNWG`, "LPSPTNWG"),
+  "LPS, PTN and W (XTT)" = visualize_data(data_list_CM$`LPSPTNWX`, "LPSPTNWX"),
+  "Res, PTN and W (Griess)" = visualize_data(data_list_CM$`ResPTNWG`, "ResPTNWG"),
+  "Res, PTN and W (XTT)" = visualize_data(data_list_CM$`ResPTNWX`, "ResPTNWX")
+)
+
+# Combine plots using patchwork
+combined_plots <- list(
+  LPS_MK_combined = plot_list$"LPS and MK (Griess)" + plot_list$"LPS and MK (XTT)",
+  Res_MK_combined = plot_list$"Res and MK (Griess)" + plot_list$"Res and MK (XTT)",
+  LPS_PTN_combined = plot_list$"LPS and PTN (Griess)" + plot_list$"LPS and PTN (XTT)",
+  Res_PTN_combined = plot_list$"Res and PTN (Griess)" + plot_list$"Res and PTN (XTT)",
+  LPS_PTN_W_combined = plot_list$"LPS, PTN and W (Griess)" + plot_list$"LPS, PTN and W (XTT)",
+  Res_PTN_W_combined = plot_list$"Res, PTN and W (Griess)" + plot_list$"Res, PTN and W (XTT)"
+)
+
+# Save combined plots as PNG files
+counter <- 1
+for (name in names(combined_plots)) {
+  filename <- paste0("Combined_Figure_", counter, ".png")
+  ggsave(filename = filename, plot = combined_plots[[name]], width = 14, height = 7, dpi = 300)
+  counter <- counter + 1
+}
+
+combined_plots
+```
